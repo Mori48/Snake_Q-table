@@ -42,7 +42,12 @@ def load_q_table(filename="qtable.npy"):
         return loaded_q
     except FileNotFoundError:
         print(f"Файл {filename} не найден, создается новая Q-таблица")
-        return np.zeros((GRID_WIDTH * 2 + 1, GRID_HEIGHT * 2 + 1, 4, 4))
+        return np.zeros((GRID_WIDTH * 2 + 1, #dx
+                        GRID_HEIGHT * 2 + 1, #dy
+                        4,                   #directions
+                        2, 2, 2, 2,           # danger (0 или 1)
+                        4,                   # actions
+                        ), dtype=np.float32)
 
 def apple_spawn(snake_body, index):
     if index:
@@ -97,18 +102,36 @@ apple_surf.fill('Red')
 apple_rect = apple_surf.get_rect(center=(apple_x_pos, apple_y_pos))
 
 # Q-learning параметры
-alpha = 0.1
+alpha = 0.2
 gamma = 0.9
-epsilon = 0.2
+epsilon = 0.3
 
 # Дискретизация состояний
 def discretize(value, cell_size):
     return int(round(value / cell_size))
 
-def get_state(snake_head, apple_pos, direction):
-    dx = discretize(apple_pos[0] - snake_head[0], CELL_SIZE)
-    dy = discretize(apple_pos[1] - snake_head[1], CELL_SIZE)
-    return (dx, dy, direction)
+def get_state(snake_head, snake_body, apple_pos, direction):
+    # Текущие координаты головы
+    head_x, head_y = snake_head
+    
+    # Дискретизированные координаты яблока относительно головы
+    dx = discretize(apple_pos[0] - head_x, CELL_SIZE)
+    dy = discretize(apple_pos[1] - head_y, CELL_SIZE)
+    
+    # Проверка соседних клеток (0 = свободно, 1 = стена/тело)
+    danger_left = 1 if (head_x - CELL_SIZE < FIELD_X or 
+                        any((head_x - CELL_SIZE, head_y) == segment for segment in snake_body[1:])) else 0
+    danger_right = 1 if (head_x + CELL_SIZE >= FIELD_X + FIELD_WIDTH or 
+                        any((head_x + CELL_SIZE, head_y) == segment for segment in snake_body[1:])) else 0
+    danger_up = 1 if (head_y - CELL_SIZE < FIELD_Y or 
+                    any((head_x, head_y - CELL_SIZE) == segment for segment in snake_body[1:])) else 0
+    danger_down = 1 if (head_y + CELL_SIZE >= FIELD_Y + FIELD_HEIGHT or 
+                        any((head_x, head_y + CELL_SIZE) == segment for segment in snake_body[1:])) else 0
+    
+    # Возвращаем кортеж с полным состоянием
+    return (dx, dy, direction, 
+            danger_left, danger_right, danger_up, danger_down
+            )
 
 # Инициализация Q-таблицы с разумными размерами
 Q = load_q_table()
@@ -122,15 +145,22 @@ def choose_action(state):
 def update_q_table(state, action, reward, next_state):
     Q[state][action] += alpha * (reward + gamma * np.max(Q[next_state]) - Q[state][action])
 
-def get_reward(snake_head, apple_pos, game_over):
+def get_reward(snake_head,snake_body, apple_pos, game_over):
+
+    head_x, head_y = snake_head
     if game_over:
         return -100
-    elif (snake_head[0] == apple_pos[0] and snake_head[1] == apple_pos[1]):
+    if (head_x == apple_pos[0] and head_y == apple_pos[1]):
         return 100
-    else:
-        # Добавляем награду за приближение к яблоку
-        distance = ((apple_pos[0] - snake_head[0])**2 + (apple_pos[1] - snake_head[1])**2)**0.5
-        return -0.1 * distance / CELL_SIZE  # Нормализованный штраф за расстояние
+    next_x = head_x + snake_move_x
+    next_y = head_y + snake_move_y
+    if any((next_x, next_y) == segment for segment in snake_body[1:]):
+        return -50  # Сильный штраф за опасный ход
+    
+
+    # Добавляем награду за приближение к яблоку
+    distance = ((apple_pos[0] - snake_head[0])**2 + (apple_pos[1] - snake_head[1])**2)**0.5
+    return 1.0 - distance / (GRID_WIDTH * CELL_SIZE) # Нормализованный штраф за расстояние
 
 score = 0
 current_direction = 1  # 0=влево, 1=вверх, 2=вправо, 3=вниз
@@ -149,7 +179,7 @@ while True:
                 exit()
 
     # Получаем текущее состояние
-    state = get_state(snake_body[0], (apple_x_pos, apple_y_pos), current_direction)
+    state = get_state(snake_body[0],snake_body, (apple_x_pos, apple_y_pos), current_direction)
     
     # Выбираем действие
     action = choose_action(state)
@@ -185,12 +215,12 @@ while True:
     game_over = False
     if (snake_x_pos < FIELD_X or snake_x_pos >= FIELD_X + FIELD_WIDTH or
         snake_y_pos < FIELD_Y or snake_y_pos >= FIELD_Y + FIELD_HEIGHT or
-        any(segment[0] == snake_x_pos and segment[1] == snake_y_pos for segment in snake_body[1:])):
+        new_head in snake_body[1:]):
         game_over = True
     
     # Получаем следующее состояние и награду
-    next_state = get_state(new_head, (apple_x_pos, apple_y_pos), current_direction)
-    reward = get_reward(new_head, (apple_x_pos, apple_y_pos), game_over)
+    next_state = get_state(new_head,snake_body, (apple_x_pos, apple_y_pos), current_direction)
+    reward = get_reward(new_head,snake_body, (apple_x_pos, apple_y_pos), game_over)
     
     # Обновляем Q-таблицу
     update_q_table(state, action, reward, next_state)
